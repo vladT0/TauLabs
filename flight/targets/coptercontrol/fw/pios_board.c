@@ -133,6 +133,81 @@ static const struct pios_mpu60x0_cfg pios_mpu6000_cfg = {
 };
 #endif /* PIOS_INCLUDE_MPU6000 */
 
+/**
+ * Configuration for the MPU6050 chip
+ */
+#if defined(PIOS_INCLUDE_MPU6050)
+#include "pios_mpu6050.h"
+static const struct pios_exti_cfg pios_exti_mpu6050_cfg __exti_config = {
+	.vector = PIOS_MPU6050_IRQHandler,
+	.line = EXTI_Line15,
+	.pin = {
+		.gpio = GPIOA,
+		.init = {
+			.GPIO_Pin = GPIO_Pin_15,
+			.GPIO_Speed = GPIO_Speed_10MHz,
+			.GPIO_Mode  = GPIO_Mode_IN_FLOATING,
+		},
+	},
+	.irq = {
+		.init = {
+			.NVIC_IRQChannel = EXTI15_10_IRQn,
+			.NVIC_IRQChannelPreemptionPriority = PIOS_IRQ_PRIO_MID,
+			.NVIC_IRQChannelSubPriority = 0,
+			.NVIC_IRQChannelCmd = ENABLE,
+		},
+	},
+	.exti = {
+		.init = {
+			.EXTI_Line = EXTI_Line15, // matches above GPIO pin
+			.EXTI_Mode = EXTI_Mode_Interrupt,
+			.EXTI_Trigger = EXTI_Trigger_Rising,
+			.EXTI_LineCmd = ENABLE,
+		},
+	},
+};
+
+static const struct pios_mpu60x0_cfg pios_mpu6050_cfg = {
+	.exti_cfg = &pios_exti_mpu6050_cfg,
+	.default_samplerate = 500,
+	.interrupt_cfg = PIOS_MPU60X0_INT_CLR_ANYRD,
+	.interrupt_en = PIOS_MPU60X0_INTEN_DATA_RDY,
+	.User_ctl = 0,
+	.Pwr_mgmt_clk = PIOS_MPU60X0_PWRMGMT_PLL_Z_CLK,
+	.default_filter = PIOS_MPU60X0_LOWPASS_256_HZ,
+	.orientation = PIOS_MPU60X0_TOP_180DEG
+};
+#endif /* PIOS_INCLUDE_MPU6050 */
+
+/**
+ * Indicate a target-specific error code when a component fails to initialize
+ * 1 pulse - MPU9150 - no irq
+ * 2 pulses - MPU9150 - failed configuration or task starting
+ * 3 pulses - internal I2C bus locked
+ * 4 pulses - external I2C bus locked
+ * 5 pulses - flash
+ * 6 pulses - CAN
+ * 11 pulses - external HMC5883 failed
+ */
+void panic(int32_t code) {
+	while(1){
+		for (int32_t i = 0; i < code; i++) {
+			PIOS_WDG_Clear();
+			PIOS_LED_Toggle(PIOS_LED_ALARM);
+			PIOS_DELAY_WaitmS(200);
+			PIOS_WDG_Clear();
+			PIOS_LED_Toggle(PIOS_LED_ALARM);
+			PIOS_DELAY_WaitmS(200);
+		}
+		PIOS_WDG_Clear();
+		PIOS_DELAY_WaitmS(200);
+		PIOS_WDG_Clear();
+		PIOS_DELAY_WaitmS(200);
+		PIOS_WDG_Clear();
+		PIOS_DELAY_WaitmS(100);
+	}
+}
+
 #include <pios_board_info.h>
 /**
  * PIOS_Board_Init()
@@ -152,6 +227,14 @@ void PIOS_Board_Init(void) {
 	PIOS_Assert(led_cfg);
 	PIOS_LED_Init(led_cfg);
 #endif	/* PIOS_INCLUDE_LED */
+
+#if defined(PIOS_INCLUDE_I2C) && defined(PIOS_INCLUDE_MPU6050)
+	if (PIOS_I2C_Init(&pios_i2c_flexi_adapter_id, &pios_i2c_flexi_adapter_cfg)) {
+		PIOS_DEBUG_Assert(0);
+	}
+	if (PIOS_I2C_CheckClear(pios_i2c_flexi_adapter_id) != 0)
+		panic(3);
+#endif
 
 #if defined(PIOS_INCLUDE_SPI)
 	/* Set up the SPI interface to the serial flash */
@@ -631,9 +714,14 @@ void PIOS_Board_Init(void) {
     }
 	break;
 }
+
 	/* Configure the flexi port */
 	uint8_t hw_flexiport;
 	HwCopterControlFlexiPortGet(&hw_flexiport);
+
+#if defined(PIOS_INCLUDE_MPU6050)
+	hw_flexiport=HWCOPTERCONTROL_FLEXIPORT_DISABLED;
+#endif
 
 	switch (hw_flexiport) {
 	case HWCOPTERCONTROL_FLEXIPORT_DISABLED:
@@ -934,17 +1022,92 @@ void PIOS_Board_Init(void) {
 
 	switch(bdinfo->board_rev) {
 		case BOARD_REVISION_CC:
+		{
+#if defined(PIOS_INCLUDE_MPU6050)
+			//Disable JTAG because we use IRQ15
+			GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
+#endif
 			// Revision 1 with invensense gyros, start the ADC
 #if defined(PIOS_INCLUDE_ADC)
-		{
 			uint32_t internal_adc_id;
 			PIOS_INTERNAL_ADC_Init(&internal_adc_id, &internal_adc_cfg);
 			PIOS_ADC_Init(&pios_internal_adc_id, &pios_internal_adc_driver, internal_adc_id);
-		}
 #endif
 #if defined(PIOS_INCLUDE_ADXL345)
 			PIOS_ADXL345_Init(pios_spi_flash_accel_id, 0);
 #endif
+#if defined(PIOS_INCLUDE_MPU6050)
+
+			if (PIOS_MPU6050_Init(pios_i2c_flexi_adapter_id, PIOS_MPU6050_I2C_ADD_A0_LOW, &pios_mpu6050_cfg) != 0)
+				panic(2);
+			if (PIOS_MPU6050_Test() != 0)
+				panic(2);
+
+			uint8_t hw_gyro_range;
+			HwCopterControlGyroRangeGet(&hw_gyro_range);
+			switch(hw_gyro_range) {
+				case HWCOPTERCONTROL_GYRORANGE_250:
+					PIOS_MPU6050_SetGyroRange(PIOS_MPU60X0_SCALE_250_DEG);
+					break;
+				case HWCOPTERCONTROL_GYRORANGE_500:
+					PIOS_MPU6050_SetGyroRange(PIOS_MPU60X0_SCALE_500_DEG);
+					break;
+				case HWCOPTERCONTROL_GYRORANGE_1000:
+					PIOS_MPU6050_SetGyroRange(PIOS_MPU60X0_SCALE_1000_DEG);
+					break;
+				case HWCOPTERCONTROL_GYRORANGE_2000:
+					PIOS_MPU6050_SetGyroRange(PIOS_MPU60X0_SCALE_2000_DEG);
+					break;
+			}
+
+			uint8_t hw_accel_range;
+			HwCopterControlAccelRangeGet(&hw_accel_range);
+			switch(hw_accel_range) {
+				case HWCOPTERCONTROL_ACCELRANGE_2G:
+					PIOS_MPU6050_SetAccelRange(PIOS_MPU60X0_ACCEL_2G);
+					break;
+				case HWCOPTERCONTROL_ACCELRANGE_4G:
+					PIOS_MPU6050_SetAccelRange(PIOS_MPU60X0_ACCEL_4G);
+					break;
+				case HWCOPTERCONTROL_ACCELRANGE_8G:
+					PIOS_MPU6050_SetAccelRange(PIOS_MPU60X0_ACCEL_8G);
+					break;
+				case HWCOPTERCONTROL_ACCELRANGE_16G:
+					PIOS_MPU6050_SetAccelRange(PIOS_MPU60X0_ACCEL_16G);
+					break;
+			}
+
+			// the filter has to be set before rate else divisor calculation will fail
+			uint8_t hw_mpu6050_dlpf;
+			HwCopterControlMPU6000DLPFGet(&hw_mpu6050_dlpf);
+			enum pios_mpu60x0_filter mpu6050_dlpf = \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_256) ? PIOS_MPU60X0_LOWPASS_256_HZ : \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_188) ? PIOS_MPU60X0_LOWPASS_188_HZ : \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_98) ? PIOS_MPU60X0_LOWPASS_98_HZ : \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_42) ? PIOS_MPU60X0_LOWPASS_42_HZ : \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_20) ? PIOS_MPU60X0_LOWPASS_20_HZ : \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_10) ? PIOS_MPU60X0_LOWPASS_10_HZ : \
+			    (hw_mpu6050_dlpf == HWCOPTERCONTROL_MPU6000DLPF_5) ? PIOS_MPU60X0_LOWPASS_5_HZ : \
+			    pios_mpu6050_cfg.default_filter;
+			PIOS_MPU6050_SetLPF(mpu6050_dlpf);
+
+			uint8_t hw_mpu6050_samplerate;
+			HwCopterControlMPU6000RateGet(&hw_mpu6050_samplerate);
+			uint16_t mpu6050_samplerate = \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_200) ? 200 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_333) ? 333 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_500) ? 500 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_666) ? 666 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_1000) ? 1000 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_2000) ? 2000 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_4000) ? 4000 : \
+			    (hw_mpu6050_samplerate == HWCOPTERCONTROL_MPU6000RATE_8000) ? 8000 : \
+			    pios_mpu6050_cfg.default_samplerate;
+			PIOS_MPU6050_SetSampleRate(mpu6050_samplerate);
+
+#endif /* PIOS_INCLUDE_MPU6050 */
+
+		}
 			break;
 		case BOARD_REVISION_CC3D:
 			// Revision 2 with L3GD20 gyros, start a SPI interface and connect to it
@@ -1020,13 +1183,17 @@ void PIOS_Board_Init(void) {
 			PIOS_MPU6000_SetSampleRate(mpu6000_samplerate);
 
 #endif /* PIOS_INCLUDE_MPU6000 */
-
 			break;
 		default:
 			PIOS_Assert(0);
 	}
 
+	//I2C is slow, sensor init as well, reset watchdog to prevent reset here
+	PIOS_WDG_Clear();
+
+#if defined(PIOS_INCLUDE_GPIO)
 	PIOS_GPIO_Init();
+#endif
 
 	/* Make sure we have at least one telemetry link configured or else fail initialization */
 	PIOS_Assert(pios_com_telem_rf_id || pios_com_telem_usb_id);

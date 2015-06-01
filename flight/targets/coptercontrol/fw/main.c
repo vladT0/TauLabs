@@ -46,6 +46,17 @@
 extern void PIOS_Board_Init(void);
 extern void Stack_Change(void);
 
+/* Local Variables */
+#define INIT_TASK_PRIORITY	(tskIDLE_PRIORITY + configMAX_PRIORITIES - 1)	// max priority
+#define INIT_TASK_STACK		(1024 / 4)										// XXX this seems excessive
+static xTaskHandle initTaskHandle;
+
+/* Function Prototypes */
+static void initTask(void *parameters);
+
+/* Prototype of generated InitModules() function */
+extern void InitModules(void);
+
 /**
 * Tau Labs Main function:
 *
@@ -57,46 +68,24 @@ extern void Stack_Change(void);
 */
 int main()
 {
+	int	result;
+
 	/* NOTE: Do NOT modify the following start-up sequence */
 	/* Any new initialization functions should be added in OpenPilotInit() */
 
 	/* Brings up System using CMSIS functions, enables the LEDs. */
 	PIOS_SYS_Init();
 
-	/* Architecture dependant Hardware and
-	 * core subsystem initialisation
-	 * (see pios_board.c for your arch)
-	 * */
-	PIOS_Board_Init();
-	PIOS_WDG_Clear();
-#ifdef ERASE_FLASH
-	PIOS_Flash_Jedec_EraseChip();
-#if defined(PIOS_LED_HEARTBEAT)
-	PIOS_LED_Off(PIOS_LED_HEARTBEAT);
-#endif	/* PIOS_LED_HEARTBEAT */
-	while (1) ;
-#endif
-
-	/* Initialize modules */
-	MODULE_INITIALISE_ALL(PIOS_WDG_Clear);
+	/* For Revolution we use a FreeRTOS task to bring up the system so we can */
+	/* always rely on FreeRTOS primitive */
+	result = xTaskCreate(initTask, (const signed char *)"init",
+						 INIT_TASK_STACK, NULL, INIT_TASK_PRIORITY,
+						 &initTaskHandle);
+	PIOS_Assert(result == pdPASS);
 
 	/* swap the stack to use the IRQ stack */
 	Stack_Change();
 
-	/* Start the FreeRTOS scheduler, which should never return.
-	 *
-	 * NOTE: OpenPilot runs an operating system (FreeRTOS), which constantly calls 
-	 * (schedules) function files (modules). These functions never return from their
-	 * while loops, which explains why each module has a while(1){} segment. Thus, 
-	 * the OpenPilot software actually starts at the vTaskStartScheduler() function, 
-	 * even though this is somewhat obscure.
-	 *
-	 * In addition, there are many main() functions in the OpenPilot firmware source tree
-	 * This is because each main() refers to a separate hardware platform. Of course,
-	 * C only allows one main(), so only the relevant main() function is compiled when 
-	 * making a specific firmware.
-	 *
-	 */
 	vTaskStartScheduler();
 
 	/* If all is well we will never reach here as the scheduler will now be running. */
@@ -112,8 +101,27 @@ int main()
 	return 0;
 }
 
+void
+initTask(void *parameters)
+{
+	PIOS_Board_Init();
+	PIOS_WDG_Clear();
+#ifdef ERASE_FLASH
+	PIOS_Flash_Jedec_EraseChip();
+#if defined(PIOS_LED_HEARTBEAT)
+	PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+#endif	/* PIOS_LED_HEARTBEAT */
+	while (1) ;
+#endif
+
+	/* Initialize modules */
+	MODULE_INITIALISE_ALL(PIOS_WDG_Clear);
+
+	/* terminate this task */
+	vTaskDelete(NULL);
+}
+
 /**
  * @}
  * @}
  */
-

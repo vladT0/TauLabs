@@ -71,11 +71,13 @@ static SensorSettingsData sensorSettings;
 
 // Private functions
 static void AttitudeTask(void *parameters);
-
 static float gyro_correct_int[3] = {0,0,0};
-static struct pios_queue *gyro_queue;
 
+#if defined(PIOS_INCLUDE_ADXL345) && defined(PIOS_INCLUDE_ADC)
+static struct pios_queue *gyro_queue;
 static int32_t updateSensors(AccelsData *, GyrosData *);
+#endif
+
 static int32_t updateSensorsCC3D(AccelsData * accelsData, GyrosData * gyrosData);
 static void updateAttitude(AccelsData *, GyrosData *);
 static void settingsUpdatedCb(UAVObjEvent * objEv);
@@ -118,6 +120,25 @@ static int32_t const MAX_TRIM_FLIGHT_SAMPLES = 65535;
 
 #define ADXL345_ACCEL_SCALE  (GRAVITY * 0.004f)
 /* 0.004f is gravity / LSB */
+
+void local_panic(int32_t code) {
+	while(1){
+		for (int32_t i = 0; i < code; i++) {
+			PIOS_WDG_Clear();
+			PIOS_LED_Toggle(PIOS_LED_ALARM);
+			PIOS_DELAY_WaitmS(200);
+			PIOS_WDG_Clear();
+			PIOS_LED_Toggle(PIOS_LED_ALARM);
+			PIOS_DELAY_WaitmS(200);
+		}
+		PIOS_WDG_Clear();
+		PIOS_DELAY_WaitmS(200);
+		PIOS_WDG_Clear();
+		PIOS_DELAY_WaitmS(200);
+		PIOS_WDG_Clear();
+		PIOS_DELAY_WaitmS(100);
+	}
+}
 
 /**
  * Initialise the module, called on startup
@@ -184,16 +205,23 @@ MODULE_INITCALL(AttitudeInitialize, AttitudeStart)
 static void AttitudeTask(void *parameters)
 {
 	AlarmsClear(SYSTEMALARMS_ALARM_ATTITUDE);
-	
+
+#if defined(PIOS_INCLUDE_ADXL345)
 	// Set critical error and wait until the accel is producing data
 	while(PIOS_ADXL345_FifoElements() == 0) {
 		AlarmsSet(SYSTEMALARMS_ALARM_ATTITUDE, SYSTEMALARMS_ALARM_CRITICAL);
 		PIOS_WDG_UpdateFlag(PIOS_WDG_ATTITUDE);
 	}
+#endif
 	
 	const struct pios_board_info * bdinfo = &pios_board_info_blob;
-	
-	bool cc3d = bdinfo->board_rev == 0x02;
+
+	bool mpu6050 = 0;
+#if defined(PIOS_INCLUDE_MPU6050) && defined(PIOS_MPU6050_ACCEL)
+	mpu6050 = 0x01;
+#endif
+
+	bool cc3d = bdinfo->board_rev == 0x02 || mpu6050;
 
 	if (!cc3d) {
 #if defined(PIOS_INCLUDE_ADC)
@@ -286,10 +314,15 @@ static void AttitudeTask(void *parameters)
 		GyrosData gyros;
 		int32_t retval = 0;
 
-		if (cc3d)
+		if (cc3d) {
 			retval = updateSensorsCC3D(&accels, &gyros);
+		}
 		else
+		{
+#if defined(PIOS_INCLUDE_ADXL345) && defined(PIOS_INCLUDE_ADC)
 			retval = updateSensors(&accels, &gyros);
+#endif
+		}
 
 		// During power on set to angle from accel
 		if (complimentary_filter_status == CF_POWERON) {
@@ -319,6 +352,7 @@ static void AttitudeTask(void *parameters)
  * @param[in] attitudeRaw Populate the UAVO instead of saving right here
  * @return 0 if successfull, -1 if not
  */
+#if defined(PIOS_INCLUDE_ADXL345) && defined(PIOS_INCLUDE_ADC)
 static int32_t updateSensors(AccelsData * accelsData, GyrosData * gyrosData)
 {
 	struct pios_adxl345_data accel_data;
@@ -378,6 +412,7 @@ static int32_t updateSensors(AccelsData * accelsData, GyrosData * gyrosData)
 
 	return 0;
 }
+#endif
 
 /**
  * Get an update from the sensors
@@ -392,7 +427,7 @@ static int32_t updateSensorsCC3D(AccelsData * accelsData, GyrosData * gyrosData)
 
 	queue = PIOS_SENSORS_GetQueue(PIOS_SENSOR_GYRO);
 	if(queue == NULL || PIOS_Queue_Receive(queue, (void *) &gyros, 4) == false) {
-		return-1;
+		return -1;
 	}
 
 	// As it says below, because the rest of the code expects the accel to be ready when

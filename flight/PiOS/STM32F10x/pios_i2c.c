@@ -36,8 +36,13 @@
 
 #if defined(PIOS_INCLUDE_FREERTOS)
 #define USE_FREERTOS
+//TVJ
+#define MPU_WRAPPERS_INCLUDED_FROM_API_FILE
+#include "FreeRTOS.h"  /* needed by task.h */
+#include "task.h"  /* vTaskSuspendAll, xTaskResumeAll */
+#undef MPU_WRAPPERS_INCLUDED_FROM_API_FILE
 #endif
-
+//
 #include <pios_i2c_priv.h>
 
 //#define I2C_HALT_ON_ERRORS
@@ -349,7 +354,8 @@ static void go_stopping(struct pios_i2c_adapter *i2c_adapter)
 	}
 
 #ifdef USE_FREERTOS
-	portEND_SWITCHING_ISR(woken ? pdTRUE : pdFALSE);
+	portEND_SWITCHING_ISR(woken == true ? pdTRUE : pdFALSE);
+	//portEND_SWITCHING_ISR(woken ? pdTRUE : pdFALSE);
 #endif
 }
 

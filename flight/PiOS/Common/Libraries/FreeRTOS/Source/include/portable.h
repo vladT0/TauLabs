@@ -201,6 +201,7 @@
 
 #ifdef GCC_ARMCM3
 	#include "../../Source/portable/GCC/ARM_CM3/portmacro.h"
+//	#include "C:/Projects/TauLabs/TauLabs/flight/PiOS/STM32F10x/Libraries/FreeRTOS/Source/portable/GCC/ARM_CM3/portmacro.h"
 #endif
 
 #ifdef IAR_ARM_CM3
